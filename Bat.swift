@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         warnItem.isHidden = !monitor.drainingWhilePluggedIn
         if monitor.drainingWhilePluggedIn {
-            warnItem.attributedTitle = styled(pad("Deficit:") + String(format: "%6.2fW from battery", monitor.fromBattery),
+            warnItem.attributedTitle = styled(pad("Deficit:") + String(format: "%5.2fW from battery", monitor.fromBattery),
                                               .systemRed)
         }
 
@@ -225,7 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// "Adapter: +  7.37W" — a monospaced font is what keeps the columns lined up.
     private func reading(_ label: String, _ watts: Double, sign: String? = nil, color: NSColor? = nil) -> NSAttributedString {
-        pair(pad(label + ":"), (sign ?? " ") + String(format: "%6.2fW", watts), color)
+        pair(pad(label + ":"), (sign ?? " ") + String(format: "%5.2fW", watts), color)
     }
 
     /// Dim label, full-contrast value. Disabled rows would otherwise be painted gray throughout.
@@ -240,7 +240,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func styled(_ text: String, _ color: NSColor? = nil) -> NSAttributedString {
-        let size = NSFont.menuFont(ofSize: 0).pointSize
+        // A notch below the menu font: readings are a compact block, not menu commands.
+        let size = NSFont.menuFont(ofSize: 0).pointSize - 2
         var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular)]
         if let color { attributes[.foregroundColor] = color }
         return NSAttributedString(string: text, attributes: attributes)
