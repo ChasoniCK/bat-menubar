@@ -194,18 +194,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func update() {
         monitor.refresh()
 
-        loadItem.attributedTitle = reading("System", monitor.system,
-                                           color: monitor.onBattery ? .systemRed : .systemGreen)
-        adapterItem.attributedTitle = reading("Adapter", monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil)
-        batteryItem.attributedTitle = reading("Battery", abs(monitor.batteryWatts),
-                                              sign: batterySign,
-                                              color: monitor.onBattery ? .systemRed : nil)
-        stateItem.attributedTitle = pair(pad("State:"), stateText)
+        loadItem.attributedTitle = row("System", watts(monitor.system),
+                                       monitor.onBattery ? .systemRed : .systemGreen)
+        adapterItem.attributedTitle = row("Adapter", watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil))
+        batteryItem.attributedTitle = row("Battery", watts(abs(monitor.batteryWatts), sign: batterySign),
+                                          monitor.onBattery ? .systemRed : nil)
+        stateItem.attributedTitle = NSAttributedString(string: stateText, attributes: [
+            .font: NSFont.menuFont(ofSize: 0),
+            .foregroundColor: NSColor.labelColor,
+        ])
 
         warnItem.isHidden = !monitor.drainingWhilePluggedIn
         if monitor.drainingWhilePluggedIn {
-            warnItem.attributedTitle = styled(pad("Deficit:") + String(format: "%5.2fW from battery", monitor.fromBattery),
-                                              .systemRed)
+            warnItem.attributedTitle = row("Deficit", watts(monitor.fromBattery, sign: "+"), .systemRed)
         }
 
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -223,28 +224,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return monitor.battery.pluggedIn ? "Not Charging" : "Idle"
     }
 
-    /// "Adapter: +  7.37W" — a monospaced font is what keeps the columns lined up.
-    private func reading(_ label: String, _ watts: Double, sign: String? = nil, color: NSColor? = nil) -> NSAttributedString {
-        pair(pad(label + ":"), (sign ?? " ") + String(format: "%5.2fW", watts), color)
+    private func watts(_ value: Double, sign: String? = nil) -> String {
+        (sign ?? "") + String(format: "%.1fW", value)
     }
 
-    /// Dim label, full-contrast value. Disabled rows would otherwise be painted gray throughout.
-    private func pair(_ label: String, _ value: String, _ color: NSColor? = nil) -> NSAttributedString {
-        let line = NSMutableAttributedString(attributedString: styled(label, .secondaryLabelColor))
-        line.append(styled(value, color ?? .labelColor))
+    /// Dim label, full-contrast value on a tab stop: numbers right-aligned into a column, prose
+    /// left-aligned close to its label so a long state name cannot widen the whole menu.
+    private func row(_ label: String, _ value: String, _ color: NSColor? = nil,
+                     tab: NSTextTab = .init(textAlignment: .right, location: 105)) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [tab]
+        let size = NSFont.menuFont(ofSize: 0).pointSize
+        let line = NSMutableAttributedString(string: label + "\t", attributes: [
+            .font: NSFont.menuFont(ofSize: 0),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: style,
+        ])
+        line.append(NSAttributedString(string: value, attributes: [
+            // Monospaced digits only: the numbers stay put without widening the whole row.
+            .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular),
+            .foregroundColor: color ?? .labelColor,
+            .paragraphStyle: style,
+        ]))
         return line
-    }
-
-    private func pad(_ label: String) -> String {
-        label.padding(toLength: max(9, label.count), withPad: " ", startingAt: 0)
-    }
-
-    private func styled(_ text: String, _ color: NSColor? = nil) -> NSAttributedString {
-        // A notch below the menu font: readings are a compact block, not menu commands.
-        let size = NSFont.menuFont(ofSize: 0).pointSize - 2
-        var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: size, weight: .regular)]
-        if let color { attributes[.foregroundColor] = color }
-        return NSAttributedString(string: text, attributes: attributes)
     }
 
     @objc private func toggleLogin() {
