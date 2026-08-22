@@ -161,10 +161,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(loginItem)
 
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
+        // No keyEquivalent here: showing "⌘Q" makes AppKit reserve ~47pt of empty space on every row.
+        let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         quit.isEnabled = true
         menu.addItem(quit)
+
+        // The visible item shows no shortcut; this hidden twin carries ⌘Q so the reserved
+        // key-equivalent column does not widen every row.
+        let quitShortcut = NSMenuItem(title: "Quit", action: #selector(AppDelegate.quit), keyEquivalent: "q")
+        quitShortcut.target = self
+        quitShortcut.isHidden = true
+        quitShortcut.allowsKeyEquivalentWhenHidden = true
+        menu.addItem(quitShortcut)
 
         statusItem.menu = menu
         update()
