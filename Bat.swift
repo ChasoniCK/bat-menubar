@@ -194,19 +194,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func update() {
         monitor.refresh()
 
-        loadItem.attributedTitle = row("System", watts(monitor.system),
+        loadItem.attributedTitle = row("System:", watts(monitor.system),
                                        monitor.onBattery ? .systemRed : .systemGreen)
-        adapterItem.attributedTitle = row("Adapter", watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil))
-        batteryItem.attributedTitle = row("Battery", watts(abs(monitor.batteryWatts), sign: batterySign),
+        adapterItem.attributedTitle = row("Adapter:", watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil))
+        batteryItem.attributedTitle = row("Battery:", watts(abs(monitor.batteryWatts), sign: batterySign),
                                           monitor.onBattery ? .systemRed : nil)
-        stateItem.attributedTitle = NSAttributedString(string: stateText, attributes: [
-            .font: NSFont.menuFont(ofSize: 0),
-            .foregroundColor: NSColor.labelColor,
-        ])
+        stateItem.attributedTitle = row("State:", stateText)
 
         warnItem.isHidden = !monitor.drainingWhilePluggedIn
         if monitor.drainingWhilePluggedIn {
-            warnItem.attributedTitle = row("Deficit", watts(monitor.fromBattery, sign: "+"), .systemRed)
+            warnItem.attributedTitle = row("Deficit:", watts(monitor.fromBattery, sign: "+"), .systemRed)
         }
 
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -224,25 +221,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return monitor.battery.pluggedIn ? "Not Charging" : "Idle"
     }
 
+    /// Sign sits in its own column, so a "+" never shifts the number: "+ 6.98W" / "  0.00W".
     private func watts(_ value: Double, sign: String? = nil) -> String {
-        (sign ?? "") + String(format: "%.1fW", value)
+        (sign ?? " ") + " " + String(format: "%.2fW", value)
     }
 
-    /// Dim label, full-contrast value on a tab stop: numbers right-aligned into a column, prose
-    /// left-aligned close to its label so a long state name cannot widen the whole menu.
+    /// Dim label, full-contrast value, right-aligned on a tab stop. The tab does the aligning that
+    /// space padding used to, which keeps the monospaced look without the extra width.
     private func row(_ label: String, _ value: String, _ color: NSColor? = nil,
-                     tab: NSTextTab = .init(textAlignment: .right, location: 105)) -> NSAttributedString {
+                     tab: NSTextTab = .init(textAlignment: .right, location: 152)) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.tabStops = [tab]
         let size = NSFont.menuFont(ofSize: 0).pointSize
+        let mono = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         let line = NSMutableAttributedString(string: label + "\t", attributes: [
-            .font: NSFont.menuFont(ofSize: 0),
+            .font: mono,
             .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: style,
         ])
         line.append(NSAttributedString(string: value, attributes: [
-            // Monospaced digits only: the numbers stay put without widening the whole row.
-            .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular),
+            .font: mono,
             .foregroundColor: color ?? .labelColor,
             .paragraphStyle: style,
         ]))
