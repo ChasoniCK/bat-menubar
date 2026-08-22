@@ -9,7 +9,8 @@ APP="$HOME/Applications/Bat.app"
 pkill -f "$APP/Contents/MacOS/Bat" 2>/dev/null || true
 mkdir -p "$HOME/Applications"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp Bat.icns "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -17,6 +18,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key><string>Bat</string>
+	<key>CFBundleIconFile</key><string>Bat</string>
 	<key>CFBundleIdentifier</key><string>com.chasonick.bat</string>
 	<key>CFBundleName</key><string>Bat</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
