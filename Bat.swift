@@ -54,37 +54,24 @@ final class SMC {
 
     /// Reads a `flt ` SMC key. Returns nil if the key is absent or not a float.
     func float(_ name: String) -> Double? {
-        let key = name.utf8.reduce(UInt32(0)) { ($0 << 8) + UInt32($1) }
-        guard let info = keyInfo(key), info.dataSize == 4,
-              info.dataType == 0x666C7420 else { return nil }  // 'flt '
-        var p = SMCParam(); p.key = key; p.data8 = 5; p.keyInfo = info  // READ_BYTES
-        guard var out = call(&p) else { return nil }
-        let v = withUnsafeBytes(of: &out.bytes) { $0.loadUnaligned(as: Float32.self) }
+        guard let v: Float32 = value(name, type: 0x666C7420) else { return nil }  // 'flt '
         return v.isFinite ? Double(v) : nil
     }
-}
 
-// MARK: - Battery (IORegistry)
+    /// Reads an `si32` SMC key. SMC payloads are little-endian, like the floats above.
+    func int32(_ name: String) -> Int32? {
+        value(name, type: 0x73693332)  // 'si32'
+    }
 
-struct BatteryState {
-    var pluggedIn = false
-    var charging = false
-    var percent = 0
-    var milliAmps = 0  // + into battery, - out of it
-
-    static func read() -> BatteryState {
-        var s = BatteryState()
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
-        guard service != 0 else { return s }
-        defer { IOObjectRelease(service) }
-        var unmanaged: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &unmanaged, kCFAllocatorDefault, 0) == kIOReturnSuccess,
-              let d = unmanaged?.takeRetainedValue() as? [String: Any] else { return s }
-        s.pluggedIn = d["ExternalConnected"] as? Bool ?? false
-        s.charging = d["IsCharging"] as? Bool ?? false
-        s.percent = d["CurrentCapacity"] as? Int ?? 0
-        s.milliAmps = (d["InstantAmperage"] as? Int) ?? (d["Amperage"] as? Int) ?? 0
-        return s
+    /// The payload must be decoded from the reply buffer in place. Handing the 32-byte tuple back to
+    /// the caller and reading it there silently yields zeroes once the optimizer gets hold of it.
+    private func value<T>(_ name: String, type: UInt32) -> T? {
+        let key = name.utf8.reduce(UInt32(0)) { ($0 << 8) + UInt32($1) }
+        guard let info = keyInfo(key), info.dataType == type,
+              info.dataSize == UInt32(MemoryLayout<T>.size) else { return nil }
+        var p = SMCParam(); p.key = key; p.data8 = 5; p.keyInfo = info  // READ_BYTES
+        guard var out = call(&p) else { return nil }
+        return withUnsafeBytes(of: &out.bytes) { $0.loadUnaligned(as: T.self) }
     }
 }
 
@@ -94,28 +81,22 @@ final class PowerMonitor {
     private(set) var system = 0.0        // total load of the machine, W
     private(set) var adapter = 0.0       // delivered by the charger, W
     private(set) var batteryWatts = 0.0  // + charging into battery, - drawn from it
-    private(set) var battery = BatteryState()
 
     private let smc = SMC()
 
+    var pluggedIn: Bool { adapter > 0.05 }
+    var charging: Bool { batteryWatts > 0.05 }
     /// Load exceeds what the adapter supplies, so the battery is covering the rest.
     var onBattery: Bool { batteryWatts < -0.05 }
-    var drainingWhilePluggedIn: Bool { adapter > 0.1 && onBattery }
+    var drainingWhilePluggedIn: Bool { pluggedIn && onBattery }
     var fromBattery: Double { max(-batteryWatts, 0) }
 
+    /// Two SMC keys, both republished on the SMC's own 1 Hz grid, and nothing else. B0AP is signed
+    /// (negative = leaving the battery), which is why IORegistry is no longer consulted here: its
+    /// battery data only refreshes once a minute, so direction used to lag by up to 60 s.
     func refresh() {
-        battery = .read()
-        // SMC gives live magnitudes at 1 Hz; IORegistry only knows the direction (it lags ~30 s,
-        // but charge/discharge flips far slower than the wattage does).
         adapter = smc?.float("PDTR") ?? 0
-        let flow = smc?.float("PPBR") ?? 0   // ~0.6 W of housekeeping noise when nothing flows
-        if battery.charging {
-            batteryWatts = flow
-        } else if battery.milliAmps < -50 {
-            batteryWatts = -flow
-        } else {
-            batteryWatts = 0
-        }
+        batteryWatts = Double(smc?.int32("B0AP") ?? 0) / 1000
         system = adapter + max(-batteryWatts, 0) - max(batteryWatts, 0)
     }
 }
@@ -176,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitShortcut)
 
         statusItem.menu = menu
+        refreshLoginState()
         update()
 
         // ponytail: the status icon can be hidden by bar managers, so --preview pops the same
@@ -189,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // ponytail: nothing to show while the menu is shut, so only poll while it's open.
     func menuWillOpen(_ menu: NSMenu) {
+        refreshLoginState()
         update()
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.update() }
         RunLoop.main.add(t, forMode: .common)  // .default stops firing during menu tracking
@@ -203,18 +186,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func update() {
         monitor.refresh()
 
-        loadItem.attributedTitle = row("System:", watts(monitor.system),
-                                       monitor.onBattery ? .systemRed : .systemGreen)
-        adapterItem.attributedTitle = row("Adapter:", watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil))
-        batteryItem.attributedTitle = row("Battery:", watts(abs(monitor.batteryWatts), sign: batterySign),
-                                          monitor.onBattery ? .systemRed : nil)
-        stateItem.attributedTitle = row("State:", stateText)
+        set(loadItem, row("System:", watts(monitor.system),
+                          monitor.onBattery ? .systemRed : .systemGreen))
+        set(adapterItem, row("Adapter:", watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil)))
+        set(batteryItem, row("Battery:", watts(abs(monitor.batteryWatts), sign: batterySign),
+                             monitor.onBattery ? .systemRed : nil))
+        set(stateItem, row("State:", stateText))
 
         warnItem.isHidden = !monitor.drainingWhilePluggedIn
         if monitor.drainingWhilePluggedIn {
-            warnItem.attributedTitle = row("Deficit:", watts(monitor.fromBattery, sign: "+"), .systemRed)
+            set(warnItem, row("Deficit:", watts(monitor.fromBattery, sign: "+"), .systemRed))
         }
 
+    }
+
+    /// Costs an XPC round trip that wakes smd and backgroundtaskmanagementd, so it is refreshed only
+    /// when the menu opens and right after the user toggles it — never on the 1 Hz tick.
+    private func refreshLoginState() {
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -225,9 +213,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var stateText: String {
-        if monitor.battery.charging { return "Charging" }
+        if monitor.charging { return "Charging" }
         if monitor.onBattery { return "Discharging" }
-        return monitor.battery.pluggedIn ? "Not Charging" : "Idle"
+        return monitor.pluggedIn ? "Not Charging" : "Idle"
     }
 
     /// Sign sits in its own column, so a "+" never shifts the number: "+ 6.98W" / "  0.00W".
@@ -237,23 +225,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Dim label, full-contrast value, right-aligned on a tab stop. The tab does the aligning that
     /// space padding used to, which keeps the monospaced look without the extra width.
-    private func row(_ label: String, _ value: String, _ color: NSColor? = nil,
-                     tab: NSTextTab = .init(textAlignment: .right, location: 152)) -> NSAttributedString {
-        let style = NSMutableParagraphStyle()
-        style.tabStops = [tab]
-        let size = NSFont.menuFont(ofSize: 0).pointSize
-        let mono = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    private func row(_ label: String, _ value: String, _ color: NSColor? = nil) -> NSAttributedString {
         let line = NSMutableAttributedString(string: label + "\t", attributes: [
-            .font: mono,
+            .font: Self.rowFont,
             .foregroundColor: NSColor.secondaryLabelColor,
-            .paragraphStyle: style,
+            .paragraphStyle: Self.rowStyle,
         ])
         line.append(NSAttributedString(string: value, attributes: [
-            .font: mono,
+            .font: Self.rowFont,
             .foregroundColor: color ?? .labelColor,
-            .paragraphStyle: style,
+            .paragraphStyle: Self.rowStyle,
         ]))
         return line
+    }
+
+    // Built once: the font lookup and paragraph style are identical for every row of every tick.
+    private static let rowFont = NSFont.monospacedSystemFont(ofSize: NSFont.menuFont(ofSize: 0).pointSize,
+                                                             weight: .regular)
+    private static let rowStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .right, location: 152)]
+        return style
+    }()
+
+    /// Assigning attributedTitle redraws the row, so skip it when the text has not moved.
+    private func set(_ item: NSMenuItem, _ title: NSAttributedString) {
+        guard item.attributedTitle?.string != title.string
+                || item.attributedTitle?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+                    != title.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor else { return }
+        item.attributedTitle = title
     }
 
     @objc private func toggleLogin() {
@@ -275,6 +275,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // MARK: - Entry point
 
+/// Only the --print smoke test wants this, so it may take the slow IORegistry path.
+private func batteryPercent() -> Int {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+    guard service != 0 else { return 0 }
+    defer { IOObjectRelease(service) }
+    return IORegistryEntryCreateCFProperty(service, "CurrentCapacity" as CFString, kCFAllocatorDefault, 0)?
+        .takeRetainedValue() as? Int ?? 0
+}
+
 @main
 enum Bat {
     // NSApplication.delegate is weak — a local would be deallocated before launch finishes.
@@ -287,7 +296,7 @@ enum Bat {
             m.refresh()
             print(String(format: "system=%.2fW adapter=%.2fW battery=%+.2fW plugged=%@ charging=%@ soc=%d%%",
                          m.system, m.adapter, m.batteryWatts,
-                         m.battery.pluggedIn ? "yes" : "no", m.battery.charging ? "yes" : "no", m.battery.percent))
+                         m.pluggedIn ? "yes" : "no", m.charging ? "yes" : "no", batteryPercent()))
             print("loginItem=\(SMAppService.mainApp.status.rawValue) (1 = enabled)")
             return
         }
