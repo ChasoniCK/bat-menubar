@@ -5,7 +5,6 @@ import IOKit.ps
 
 // MARK: - SMC
 
-// ponytail: minimal AppleSMC reader — only what a power gauge needs (float keys).
 // Layout must match SMCKeyData_t from Apple's smc.c exactly (80 bytes).
 private struct SMCVers { var major: UInt8 = 0; var minor: UInt8 = 0; var build: UInt8 = 0; var reserved: UInt8 = 0; var release: UInt16 = 0 }
 private struct SMCPLimit { var version: UInt16 = 0; var length: UInt16 = 0; var cpu: UInt32 = 0; var gpu: UInt32 = 0; var mem: UInt32 = 0 }
@@ -104,6 +103,7 @@ final class PowerMonitor {
 
 // MARK: - Menu
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = PowerMonitor()
     private var statusItem: NSStatusItem!
@@ -173,7 +173,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         refreshLoginState()
         update()
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.update() }
+        // The timer is added to RunLoop.main below, so the block only ever fires on the main
+        // thread — but Timer's block is @Sendable, so the isolation has to be asserted.
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.update() }
+        }
         RunLoop.main.add(t, forMode: .common)  // .default stops firing during menu tracking
         timer = t
     }
@@ -287,9 +291,9 @@ private func batteryPercent() -> Int {
 @main
 enum Bat {
     // NSApplication.delegate is weak — a local would be deallocated before launch finishes.
-    private static let delegate = AppDelegate()
+    @MainActor private static let delegate = AppDelegate()
 
-    static func main() {
+    @MainActor static func main() {
         // ponytail: `Bat --print` dumps one reading and exits — the app's own smoke test.
         if CommandLine.arguments.contains("--print") {
             let m = PowerMonitor()
