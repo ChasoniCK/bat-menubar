@@ -2,19 +2,8 @@
 
 A macOS menu bar app that shows where your Mac's power is going, in watts, live.
 
-```
-System:   11.27W      ← green while the adapter covers it, red once the battery chips in
-Adapter: + 11.27W
-Battery:    0.00W
-State:   Not Charging
-──────────────────
-✓ Launch at Login
-──────────────────
-  Quit            ⌘Q
-```
-
-When the load exceeds what the charger can deliver, an extra red row appears showing how many
-watts are coming out of the battery on top of the adapter.
+The System row is green while the adapter covers the load and turns red once the battery chips in;
+an extra red row then shows how many watts are coming out of the battery on top of the adapter.
 
 ## Where the numbers come from
 
@@ -59,6 +48,14 @@ xattr -dr com.apple.quarantine ~/Applications/Bat.app
 ```
 
 Needs Xcode command line tools. Installs to `~/Applications/Bat.app`. Requires macOS 26.
+
+The bundle version is taken from git: `CFBundleShortVersionString` is the latest tag without the
+`v` (`v1.7` → `1.7`), `CFBundleVersion` is the commit count. To cut a release, tag first, then build:
+
+```bash
+git tag v1.8
+./build.sh
+```
 
 ## Flags
 
