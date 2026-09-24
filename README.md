@@ -28,7 +28,27 @@ Measured, not estimated:
 - **Menu open: ~0.08 s of CPU per 40 s**, against 0.29 s for the pre-optimization build — and that
   0.29 s included 0.16 s burned in `smd` and `backgroundtaskmanagementd`, which the old code woke
   every second by asking `SMAppService` whether the login item was enabled. That check now happens
-  when the menu opens, not on every tick.
+  when the menu opens, not on every tick. (Measured before the trimming below; `./bench.sh` gives
+  the current figure.)
+
+Since then, by construction rather than measurement:
+
+- **Launch touches neither the SMC nor `SMAppService`.** Both happen on the first menu open, so a
+  login item that is never clicked never wakes `smd` and `backgroundtaskmanagementd` at login.
+- **An unchanged row costs one string compare.** Each row keeps its last text and color; before,
+  every row built a fresh attributed string each tick only to find it matched the old one. Watts
+  are formatted with integer math instead of `String(format:)`.
+- **The 1 Hz timer has 100 ms of tolerance**, so the kernel can fold its wakeup into another one.
+
+To measure, or to compare against any other commit:
+
+```bash
+./bench.sh [git-ref]   # default ref: the build before the trimming; ~4 min, hands off the mouse
+```
+
+It builds both versions, runs each with the menu shut and popped open (`--preview`), and prints a
+table of CPU time, instructions, wakeups and memory footprint from `proc_pid_rusage`. `IDLE`,
+`OPEN` and `RUNS` set the window lengths and the number of runs averaged.
 
 ## Install
 
