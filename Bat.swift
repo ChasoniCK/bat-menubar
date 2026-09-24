@@ -81,7 +81,9 @@ final class PowerMonitor {
     private(set) var adapter = 0.0       // delivered by the charger, W
     private(set) var batteryWatts = 0.0  // + charging into battery, - drawn from it
 
-    private let smc = SMC()
+    /// Opened on the first reading rather than at launch: a login item that is never clicked
+    /// never touches the SMC.
+    private lazy var smc = SMC()
 
     var pluggedIn: Bool { adapter > 0.05 }
     var charging: Bool { batteryWatts > 0.05 }
@@ -103,6 +105,54 @@ final class PowerMonitor {
 
 // MARK: - Menu
 
+/// One readout row: dim label, full-contrast value, right-aligned on a tab stop. The tab does the
+/// aligning that space padding used to, which keeps the monospaced look without the extra width.
+///
+/// The row owns its title and remembers what it last showed, so a tick whose reading has not
+/// moved costs one string compare — no attributed string built, no menu redraw.
+@MainActor
+private final class Readout {
+    let item = NSMenuItem()
+    private let title: NSMutableAttributedString
+    private let valueStart: Int
+    private var shownValue = ""
+    private var shownColor: NSColor?
+
+    init(_ label: String) {
+        title = NSMutableAttributedString(string: label + "\t", attributes: [
+            .font: Readout.font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: Readout.style,
+        ])
+        valueStart = title.length
+        title.append(NSAttributedString(string: " ", attributes: [
+            .font: Readout.font,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: Readout.style,
+        ]))
+    }
+
+    /// Both text and color are compared: the System row can turn red while its number holds still.
+    func show(_ value: String, _ color: NSColor? = nil) {
+        guard value != shownValue || color != shownColor else { return }
+        shownValue = value
+        shownColor = color
+        title.replaceCharacters(in: NSRange(location: valueStart, length: title.length - valueStart), with: value)
+        title.addAttribute(.foregroundColor, value: color ?? NSColor.labelColor,
+                           range: NSRange(location: valueStart, length: title.length - valueStart))
+        item.attributedTitle = title  // copied by the setter, so the buffer can be edited in place
+    }
+
+    // Built once: the font lookup and paragraph style are identical for every row.
+    private static let font = NSFont.monospacedSystemFont(ofSize: NSFont.menuFont(ofSize: 0).pointSize,
+                                                          weight: .regular)
+    private static let style: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .right, location: 152)]
+        return style
+    }()
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = PowerMonitor()
@@ -110,11 +160,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private var timer: Timer?
 
-    private let loadItem = NSMenuItem()
-    private let adapterItem = NSMenuItem()
-    private let batteryItem = NSMenuItem()
-    private let warnItem = NSMenuItem()
-    private let stateItem = NSMenuItem()
+    private let loadRow = Readout("System:")
+    private let adapterRow = Readout("Adapter:")
+    private let batteryRow = Readout("Battery:")
+    private let warnRow = Readout("Deficit:")
+    private let stateRow = Readout("State:")
     private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -129,7 +179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // A menu item with no action is painted dimmed, colors and all — so the readouts get an
         // inert one just to keep full contrast.
-        for item in [loadItem, adapterItem, batteryItem, stateItem, warnItem] {
+        for row in [loadRow, adapterRow, batteryRow, stateRow, warnRow] {
+            let item = row.item
             item.action = #selector(ignore)
             item.target = self
             item.isEnabled = true
@@ -156,9 +207,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quitShortcut.allowsKeyEquivalentWhenHidden = true
         menu.addItem(quitShortcut)
 
+        // No reading and no login-item query here: menuWillOpen does both before anything is
+        // shown, so launch (at every login) stays free of SMC calls and of the XPC round trip.
         statusItem.menu = menu
-        refreshLoginState()
-        update()
 
         // ponytail: the status icon can be hidden by bar managers, so --preview pops the same
         // menu on screen — the only way to eyeball the layout.
@@ -178,6 +229,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         }
+        // Slack lets the kernel fold this wakeup into one that is due anyway instead of waking
+        // the CPU on the dot; 10 % of the interval is what Apple's energy guide asks for.
+        t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)  // .default stops firing during menu tracking
         timer = t
     }
@@ -190,18 +244,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func update() {
         monitor.refresh()
 
-        set(loadItem, row("System:", watts(monitor.system),
-                          monitor.onBattery ? .systemRed : .systemGreen))
-        set(adapterItem, row("Adapter:", watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil)))
-        set(batteryItem, row("Battery:", watts(abs(monitor.batteryWatts), sign: batterySign),
-                             monitor.onBattery ? .systemRed : nil))
-        set(stateItem, row("State:", stateText))
+        loadRow.show(watts(monitor.system), monitor.onBattery ? .systemRed : .systemGreen)
+        adapterRow.show(watts(monitor.adapter, sign: monitor.adapter > 0.005 ? "+" : nil))
+        batteryRow.show(watts(abs(monitor.batteryWatts), sign: batterySign),
+                        monitor.onBattery ? .systemRed : nil)
+        stateRow.show(stateText)
 
-        warnItem.isHidden = !monitor.drainingWhilePluggedIn
-        if monitor.drainingWhilePluggedIn {
-            set(warnItem, row("Deficit:", watts(monitor.fromBattery, sign: "+"), .systemRed))
+        // Toggling visibility re-lays the menu out, so only touch it when it actually flips.
+        let hideWarn = !monitor.drainingWhilePluggedIn
+        if warnRow.item.isHidden != hideWarn { warnRow.item.isHidden = hideWarn }
+        if !hideWarn {
+            warnRow.show(watts(monitor.fromBattery, sign: "+"), .systemRed)
         }
-
     }
 
     /// Costs an XPC round trip that wakes smd and backgroundtaskmanagementd, so it is refreshed only
@@ -223,41 +277,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Sign sits in its own column, so a "+" never shifts the number: "+ 6.98W" / "  0.00W".
+    /// Integer math rather than String(format:): no trip through Foundation's formatter and no
+    /// NSString, and the result is short enough to live in Swift's inline small-string storage.
     private func watts(_ value: Double, sign: String? = nil) -> String {
-        (sign ?? " ") + " " + String(format: "%.2fW", value)
-    }
-
-    /// Dim label, full-contrast value, right-aligned on a tab stop. The tab does the aligning that
-    /// space padding used to, which keeps the monospaced look without the extra width.
-    private func row(_ label: String, _ value: String, _ color: NSColor? = nil) -> NSAttributedString {
-        let line = NSMutableAttributedString(string: label + "\t", attributes: [
-            .font: Self.rowFont,
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .paragraphStyle: Self.rowStyle,
-        ])
-        line.append(NSAttributedString(string: value, attributes: [
-            .font: Self.rowFont,
-            .foregroundColor: color ?? .labelColor,
-            .paragraphStyle: Self.rowStyle,
-        ]))
-        return line
-    }
-
-    // Built once: the font lookup and paragraph style are identical for every row of every tick.
-    private static let rowFont = NSFont.monospacedSystemFont(ofSize: NSFont.menuFont(ofSize: 0).pointSize,
-                                                             weight: .regular)
-    private static let rowStyle: NSParagraphStyle = {
-        let style = NSMutableParagraphStyle()
-        style.tabStops = [NSTextTab(textAlignment: .right, location: 152)]
-        return style
-    }()
-
-    /// Assigning attributedTitle redraws the row, so skip it when the text has not moved.
-    private func set(_ item: NSMenuItem, _ title: NSAttributedString) {
-        guard item.attributedTitle?.string != title.string
-                || item.attributedTitle?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
-                    != title.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor else { return }
-        item.attributedTitle = title
+        let centi = Int((min(abs(value), 9999) * 100).rounded())  // clamp: Int() traps on overflow
+        let frac = centi % 100
+        let lead: String = sign ?? " "
+        let minus: String = value < 0 && centi > 0 ? "-" : ""
+        let pad: String = frac < 10 ? "0" : ""
+        return "\(lead) \(minus)\(centi / 100).\(pad)\(frac)W"
     }
 
     @objc private func toggleLogin() {
