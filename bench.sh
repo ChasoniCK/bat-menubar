@@ -6,7 +6,7 @@
 # prints a Markdown table. Counters come from proc_pid_rusage, the ones Activity Monitor reads.
 # Hands off the mouse and keyboard while it runs: a click or a key closes the popped-up menu.
 #
-#   IDLE=60 OPEN=40 RUNS=1 ./bench.sh 3cc3b84
+#   IDLE=60 OPEN=40 RUNS=1 SETTLE=3 ./bench.sh 3cc3b84
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -14,7 +14,7 @@ REF=${1:-3cc3b84}
 IDLE=${IDLE:-60}  # seconds sampled with the menu shut
 OPEN=${OPEN:-40}  # seconds sampled with the menu open
 RUNS=${RUNS:-1}   # each figure is the mean over this many runs
-SETTLE=3          # seconds after launch before sampling starts
+SETTLE=${SETTLE:-3}  # seconds after launch before sampling starts
 
 TMP=$(mktemp -d)
 trap 'pkill -f "$TMP/" 2>/dev/null || true; rm -rf "$TMP"' EXIT

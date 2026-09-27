@@ -21,34 +21,50 @@ makes the kernel serialize the whole 11 KB property tree to hand over four scala
 
 ## Cost
 
-Measured, not estimated:
+**Menu closed: nothing at all.** No timer is scheduled, so once launch has settled the process
+records 0 ns of CPU, 0 instructions and 0 wakeups over a 60 s window. This does not rely on App Nap.
 
-- **Menu closed: nothing at all.** No timer is scheduled, so the process records 0 ns of CPU,
-  0 instructions and 0 wakeups over a 60 s window. This does not rely on App Nap.
-- **Menu open: ~0.08 s of CPU per 40 s**, against 0.29 s for the pre-optimization build — and that
-  0.29 s included 0.16 s burned in `smd` and `backgroundtaskmanagementd`, which the old code woke
-  every second by asking `SMAppService` whether the login item was enabled. That check now happens
-  when the menu opens, not on every tick. (Measured before the trimming below; `./bench.sh` gives
-  the current figure.)
+**Menu open:** two SMC reads per second, plus redrawing whichever rows changed. `./bench.sh`, v1.7
+(`3cc3b84`) against v1.8:
 
-Since then, by construction rather than measurement:
+| | v1.7 | v1.8 | |
+|---|---:|---:|---:|
+| Menu open: CPU per 40 s | 185.5 ms | 132.0 ms | −29% |
+| Menu open: instructions per 40 s | 217.8 M | 96.9 M | −56% |
+| Menu open: wakeups per 40 s | 185 | 46 | −75% |
+| Menu open: wakeups from package idle per 40 s | 7 | 0 | −100% |
+| Menu open: memory footprint | 18.2 MB | 17.8 MB | −2% |
+| Menu shut: CPU per 60 s | 2.0 ms | 1.3 ms | |
+| Menu shut: wakeups per 60 s | 8 | 6 | |
+| Menu shut: memory footprint | 12.6 MB | 12.6 MB | |
+| Launch: CPU in the first 3 s | 70.7 ms | 73.1 ms | |
+
+The menu-shut window opens 3 s after launch, so it still catches the tail of AppKit's start-up.
+Those rows and the launch row differ by under a millisecond, too little to credit to either build
+without averaging several runs.
+
+What v1.8 changed:
 
 - **Launch touches neither the SMC nor `SMAppService`.** Both happen on the first menu open, so a
   login item that is never clicked never wakes `smd` and `backgroundtaskmanagementd` at login.
+  (Since v1.6 that login-item check runs once per menu open, not on every tick.)
 - **An unchanged row costs one string compare.** Each row keeps its last text and color; before,
   every row built a fresh attributed string each tick only to find it matched the old one. Watts
-  are formatted with integer math instead of `String(format:)`.
-- **The 1 Hz timer has 100 ms of tolerance**, so the kernel can fold its wakeup into another one.
+  are formatted with integer math instead of `String(format:)`, and the warning row's visibility is
+  only written when it flips.
+- **The 1 Hz timer has 100 ms of tolerance**, so the kernel can fold its wakeup into one that is
+  due anyway — the change aimed at package-idle wakeups.
 
 To measure, or to compare against any other commit:
 
 ```bash
-./bench.sh [git-ref]   # default ref: the build before the trimming; ~4 min, hands off the mouse
+./bench.sh [git-ref]   # default ref: 3cc3b84 (v1.7's code); ~4 min, hands off the mouse
 ```
 
 It builds both versions, runs each with the menu shut and popped open (`--preview`), and prints a
-table of CPU time, instructions, wakeups and memory footprint from `proc_pid_rusage`. `IDLE`,
-`OPEN` and `RUNS` set the window lengths and the number of runs averaged.
+table of CPU time, instructions, wakeups and memory footprint from `proc_pid_rusage`. `IDLE` and
+`OPEN` set the window lengths, `RUNS` the number of runs averaged, and `SETTLE` how long after
+launch sampling starts (`SETTLE=60` for the steady state with the menu shut).
 
 ## Install
 
